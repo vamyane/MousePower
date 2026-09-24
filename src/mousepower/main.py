@@ -104,7 +104,8 @@ class App:
         self.tray = TrayIcon(
             self.cfg, on_refresh=self.refresh_now,
             on_settings=self.open_settings, on_quit=self.quit,
-            on_toggle_widget=self.toggle_widget)
+            on_toggle_widget=self.toggle_widget,
+            on_toggle_click_through=self.toggle_click_through)
 
         self.widget = FloatingWidget(
             self.cfg, on_quit=self.quit, on_refresh=self.refresh_now,
@@ -163,8 +164,9 @@ class App:
     def open_settings(self):
         if self.settings is None or not \
                 self.settings.win.winfo_exists():
-            self.settings = SettingsWindow(self.cfg, self.on_config_change,
-                                           self.quit)
+            self.settings = SettingsWindow(
+                self.cfg, self.on_config_change, self.quit,
+                position_cb=self.widget.apply_position_corner)
         self.settings.show()
 
     def on_config_change(self, section):
@@ -178,6 +180,14 @@ class App:
             else:
                 set_autostart(True)
             self._schedule()
+        self.tray.refresh_menu()
+
+    def toggle_click_through(self, icon=None, item=None):
+        """托盘菜单：切换鼠标穿透"""
+        enabled = not self.cfg.get("widget.click_through")
+        self.cfg.set("widget.click_through", enabled)
+        self.widget.apply_config()
+        self.tray.refresh_menu()
 
     def toggle_widget(self):
         if self.cfg.get("widget.visible"):

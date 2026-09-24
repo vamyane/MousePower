@@ -8,16 +8,19 @@ import os
 import threading
 
 APP_NAME = "MousePower"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 DEFAULTS = {
     "widget": {
         "locked": False,          # 锁定位置（禁用拖动）
-        "opacity": 0.92,          # 0.30 ~ 1.00
+        "opacity_bg": 0.92,       # 背景卡片不透明度 0.0 ~ 1.0
+        "opacity_text": 1.0,      # 文字/图标不透明度 0.2 ~ 1.0
+        "click_through": True,    # 鼠标穿透：纯显示，不遮挡下层软件操作（默认开）
         "theme": "auto",          # auto / dark / light
         "accent": "#30d158",      # 强调色（电量条/图标点缀）
         "size": "medium",         # small / medium / large
         "position": None,         # [x, y] 记忆位置
+        "corner": None,           # 位置预设 br/bl/tr/tl（None=自由位置）
         "visible": True,          # 浮窗显示
     },
     "tray": {
@@ -58,7 +61,20 @@ class Config:
         except (OSError, ValueError):
             disk = {}
         self._merge(self._data, disk)
+        self._migrate()
         self._ensure_dir()
+
+    def _migrate(self):
+        """旧版本配置字段迁移"""
+        w = self._data["widget"]
+        # v1.0.1 及更早：单一 opacity → 拆分背景/文字
+        if "opacity" in w:
+            try:
+                if "opacity_bg" not in w:
+                    w["opacity_bg"] = float(w["opacity"])
+            except (TypeError, ValueError):
+                pass
+            del w["opacity"]
 
     def _merge(self, base, override):
         for k, v in override.items():

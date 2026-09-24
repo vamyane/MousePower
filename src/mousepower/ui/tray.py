@@ -64,7 +64,7 @@ class TrayIcon:
     """pystray 托盘封装（run_detached 由 main 负责时序）"""
 
     def __init__(self, cfg, on_refresh, on_settings, on_quit,
-                 on_toggle_widget):
+                 on_toggle_widget, on_toggle_click_through):
         import pystray
         self.cfg = cfg
         self._icon = pystray.Icon(
@@ -74,12 +74,24 @@ class TrayIcon:
             menu=pystray.Menu(
                 pystray.MenuItem("立即刷新", on_refresh, default=True),
                 pystray.MenuItem("显示/隐藏浮窗", on_toggle_widget),
+                pystray.MenuItem(
+                    "鼠标穿透（不遮挡点击）",
+                    on_toggle_click_through,
+                    checked=lambda item: bool(
+                        self.cfg.get("widget.click_through"))),
                 pystray.MenuItem("设置…", on_settings),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", on_quit),
             ))
         self._pystray = pystray
         self._low_notified = False
+
+    def refresh_menu(self):
+        """配置变化后刷新菜单勾选状态"""
+        try:
+            self._icon.update_menu()
+        except Exception:
+            pass
 
     def start_detached(self):
         threading.Thread(target=self._icon.run_detached, daemon=True).start()

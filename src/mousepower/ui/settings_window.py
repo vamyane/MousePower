@@ -12,7 +12,7 @@ from .theme import palette, ACCENTS, system_prefers_dark
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-WIN_W, WIN_H = 520, 700
+WIN_W, WIN_H = 520, 740
 
 
 def _style_window(hwnd, dark):
@@ -102,11 +102,14 @@ class Slider(tk.Canvas):
 
 
 class Toggle(tk.Canvas):
-    """Win11 风格开关 44x24"""
+    """Win11 风格开关 46x26"""
+
+    W, H_ = 46, 26
 
     def __init__(self, master, initial, command, pal):
-        super().__init__(master, width=44, height=24, bg=pal["card"],
-                         highlightthickness=0, cursor="hand2")
+        super().__init__(master, width=self.W, height=self.H_,
+                         bg=pal["card"], highlightthickness=0,
+                         cursor="hand2")
         self.pal = pal
         self.state = bool(initial)
         self.command = command
@@ -123,11 +126,14 @@ class Toggle(tk.Canvas):
         on = self.pal["ok"]
         body = on if self.state else self.pal["btn"]
         outline = on if self.state else self.pal["swatch_border"]
-        self.create_oval(4, 5, 40, 19, fill=body, outline=outline)
-        cx = 32 if self.state else 12
-        self.create_oval(cx - 6, 6, cx + 6, 18,
-                         fill="#ffffff" if self.state else self.pal["text"],
-                         outline="")
+        # 胶囊轨道
+        self.create_oval(3, 5, 43, 21, fill=body, outline="")
+        self.create_oval(3, 5, 43, 21, outline=outline)
+        # 圆点（带描边增强边界感）
+        cx = 34 if self.state else 12
+        self.create_oval(cx - 6.5, 6.5, cx + 6.5, 19.5, fill="#ffffff",
+                         outline=self.pal["swatch_border"],
+                         width=1 if self.state else 0)
 
 
 class Segmented(tk.Frame):
@@ -163,9 +169,10 @@ class Segmented(tk.Frame):
 
 
 class SettingsWindow:
-    def __init__(self, cfg, on_change, on_quit_app):
+    def __init__(self, cfg, on_change, on_quit_app, position_cb=None):
         self.cfg = cfg
         self.on_change = on_change
+        self.position_cb = position_cb
         self.win = tk.Toplevel()
         self.win.title("MousePower 设置")
         self.win.geometry(f"{WIN_W}x{WIN_H}")
@@ -177,13 +184,22 @@ class SettingsWindow:
         self._style_now()
 
     def _style_now(self):
-        """应用 DWM 圆角 + 标题栏深浅（跟随主题设置）"""
+        """应用 DWM 圆角 + 标题栏深浅（跟随主题设置），并按内容自适应高度"""
         theme = self.cfg.get("widget.theme")
         is_dark = theme == "dark" or (theme == "auto"
                                       and system_prefers_dark())
         try:
             self.win.update_idletasks()
             _style_window(self.win.winfo_id(), is_dark)
+            # 高度自适应：内容高度 + 标题/页脚/边距，不超过屏幕 85%
+            need = 0
+            try:
+                need = self._inner.winfo_reqheight() + 92
+            except tk.TclError:
+                need = WIN_H
+            screen_h = self.win.winfo_screenheight()
+            h = max(420, min(need, int(screen_h * 0.85)))
+            self.win.geometry(f"{WIN_W}x{h}")
         except Exception:
             pass
 
@@ -222,6 +238,7 @@ class SettingsWindow:
         inner = tk.Frame(canvas, bg=pal["panel"])
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         self._scroll_canvas = canvas
+        self._inner = inner
 
         def _fit(_e=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -236,15 +253,31 @@ class SettingsWindow:
 
         # ---- 卡片：浮窗外观 ----
         c1 = self._card(inner, "浮窗外观")
-        row = self._row(c1, "透明度")
-        self._opacity = tk.DoubleVar(value=self.cfg.get("widget.opacity"))
-        self._slider = Slider(row, self.cfg.get("widget.opacity"),
-                              0.3, 1.0, self._on_opacity, pal, accent)
-        self._slider.pack(side="right")
+        row = self._row(c1, "背景透明度")
+        Slider(row, self.cfg.get("widget.opacity_bg"), 0.05, 1.0,
+               self._on_opacity_bg, pal, accent).pack(side="right")
+        row = self._row(c1, "内容不透明度")
+        Slider(row, self.cfg.get("widget.opacity_text"), 0.2, 1.0,
+               self._on_opacity_text, pal, accent).pack(side="right")
+        row = self._row(c1, "鼠标穿透")
+        Toggle(row, self.cfg.get("widget.click_through"),
+               self._set_click_through, pal).pack(side="right")
+        tk.Label(c1, text="开启后浮窗仅作显示，鼠标点击直接穿透到下层软件；"
+                          "位置改用下方「屏幕位置」调整",
+                 font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
+                 anchor="w", wraplength=430, justify="left").pack(
+            fill="x", padx=16, pady=(0, 4))
 
         row = self._row(c1, "锁定位置")
         Toggle(row, self.cfg.get("widget.locked"), self._set_lock,
                pal).pack(side="right")
+
+        row = self._row(c1, "屏幕位置")
+        Segmented(
+            row, [("右下", "br"), ("右上", "tr"), ("左下", "bl"),
+                  ("左上", "tl")],
+            lambda: self.cfg.get("widget.corner"), self._set_corner, pal,
+            accent).pack(side="right")
 
         row = self._row(c1, "主题")
         self._seg_theme = Segmented(
@@ -333,9 +366,23 @@ class SettingsWindow:
         return r
 
     # ---------- 变更处理（即时生效 + 保存） ----------
-    def _on_opacity(self, val):
-        self.cfg.set("widget.opacity", float(val))
+    def _on_opacity_bg(self, val):
+        self.cfg.set("widget.opacity_bg", float(val))
         self.on_change("widget")
+
+    def _on_opacity_text(self, val):
+        self.cfg.set("widget.opacity_text", float(val))
+        self.on_change("widget")
+
+    def _set_click_through(self, v):
+        self.cfg.set("widget.click_through", bool(v))
+        self.on_change("widget")
+
+    def _set_corner(self, corner):
+        self.cfg.set("widget.corner", corner)
+        self.cfg.set("widget.position", None)
+        if self.position_cb:
+            self.position_cb(corner)
 
     def _set_lock(self, v):
         self.cfg.set("widget.locked", v)
