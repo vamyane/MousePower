@@ -8,16 +8,13 @@ import os
 import threading
 
 APP_NAME = "MousePower"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.1.1"
 
 DEFAULTS = {
     "widget": {
-        "locked": False,          # 锁定位置（禁用拖动）
-        "opacity_bg": 0.92,       # 背景卡片不透明度 0.0 ~ 1.0
-        "opacity_text": 1.0,      # 文字/图标不透明度 0.2 ~ 1.0
-        "click_through": True,    # 鼠标穿透：纯显示，不遮挡下层软件操作（默认开）
+        "opacity": 0.95,          # 整窗统一不透明度 0.2 ~ 1.0
         "theme": "auto",          # auto / dark / light
-        "accent": "#30d158",      # 强调色（电量条/图标点缀）
+        "accent": "#30d158",      # 强调色（电池填充 / 托盘图标颜色）
         "size": "medium",         # small / medium / large
         "position": None,         # [x, y] 记忆位置
         "corner": None,           # 位置预设 br/bl/tr/tl（None=自由位置）
@@ -67,14 +64,18 @@ class Config:
     def _migrate(self):
         """旧版本配置字段迁移"""
         w = self._data["widget"]
-        # v1.0.1 及更早：单一 opacity → 拆分背景/文字
-        if "opacity" in w:
-            try:
-                if "opacity_bg" not in w:
-                    w["opacity_bg"] = float(w["opacity"])
-            except (TypeError, ValueError):
-                pass
-            del w["opacity"]
+        # v1.0.x：背景/文字两组不透明度 → 合并为单一 opacity
+        if "opacity_bg" in w:
+            if "opacity" not in w:
+                try:
+                    w["opacity"] = float(w["opacity_bg"])
+                except (TypeError, ValueError):
+                    pass
+            del w["opacity_bg"]
+        w.pop("opacity_text", None)
+        # v1.0.x：鼠标穿透改为默认行为，不再作为配置项
+        w.pop("click_through", None)
+        w.pop("locked", None)
 
     def _merge(self, base, override):
         for k, v in override.items():

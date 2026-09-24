@@ -2,7 +2,7 @@
 ; 主题: modern dynamic windows11 → 深浅色自动跟随系统
 
 #define MyAppName "MousePower"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "MousePower Project"
 #define MyAppExeName "MousePower.exe"
 

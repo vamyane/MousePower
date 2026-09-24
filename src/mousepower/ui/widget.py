@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
 """MousePower 浮窗
 
-实现方案：单窗口 + 逐像素 alpha（UpdateLayeredWindow）
-用 PIL 把「圆角卡片 + 电池图标 + 数字 + 文字」渲染成一张 RGBA 图，
-α 分量分别按 背景透明度 / 文字透明度 填充，再推送给分层窗口。
-这样两个透明度可完全独立控制，层与层之间也不会互相遮挡。
+造型：一个电池图标（一条轮廓线 + 内部电量填充 + 居中百分比数字），
+      没有卡片背景、没有投影，电池本身即背景。
 
-鼠标穿透（默认开启）：窗口加 WS_EX_TRANSPARENT，
-点击直接落到下层软件——浮窗纯显示，不遮挡任何操作。
+渲染：PIL 合成 RGBA → 预乘 alpha → UpdateLayeredWindow（逐像素 alpha）。
+
+交互：
+  - 默认开启鼠标穿透（WS_EX_TRANSPARENT）：纯显示，不遮挡下层软件操作
+  - 「移动位置」模式（托盘菜单开启）：临时关闭穿透，可拖动，
+    右上角出现 ✓ 确认按钮，点击确认后保存位置并恢复穿透
 """
 import ctypes
-from ctypes import (Structure, byref, c_int, c_uint, c_void_p, c_ubyte,
-                    c_ushort, c_ulong, wintypes)
+from ctypes import (Structure, byref, c_int, c_uint, c_ubyte, c_ushort,
+                    c_ulong, c_void_p, wintypes)
 import tkinter as tk
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .theme import palette, hex_to_rgb
 
-SIZES = {           # (宽, 高, 数字字号) —— 比例按电池形状设计
-    "small":  (88, 40, 17),
-    "medium": (110, 48, 22),
-    "large":  (134, 58, 27),
+SIZES = {           # (宽, 高, 数字字号)
+    "small":  (92, 42, 18),
+    "medium": (116, 50, 23),
+    "large":  (140, 60, 28),
 }
 
 GWL_EXSTYLE = -20
@@ -79,12 +81,7 @@ def _top_hwnd(win):
 
 
 def _premultiply(img):
-    """普通 alpha → 预乘 alpha
-
-    UpdateLayeredWindow 用 AC_SRC_ALPHA 时要求位图为预乘 alpha（RGB 已乘 α）。
-    直接传普通 alpha 的图会导致半透明像素被二次乘 α —— 表现就是
-    圆角边缘出现黑边、半透明卡片发灰发脏。
-    """
+    """普通 alpha → 预乘 alpha（UpdateLayeredWindow 的要求）"""
     r, g, b, a = img.convert("RGBA").split()
     return Image.merge("RGBA", (
         ImageChops.multiply(r, a),
@@ -95,29 +92,28 @@ def _premultiply(img):
 
 
 def _push_layered(hwnd, img):
-    """把 RGBA 图像作为窗口内容推送（逐像素 alpha，img 须为预乘）"""
+    """把 RGBA（预乘）图像作为窗口内容推送"""
     w, h = img.size
     hdc_screen = user32.GetDC(0)
     hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
     bmi = BITMAPINFO()
     bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
     bmi.bmiHeader.biWidth = w
-    bmi.bmiHeader.biHeight = -h          # 负数 = top-down
+    bmi.bmiHeader.biHeight = -h
     bmi.bmiHeader.biPlanes = 1
     bmi.bmiHeader.biBitCount = 32
-    bmi.bmiHeader.biCompression = 0      # BI_RGB
+    bmi.bmiHeader.biCompression = 0
     ppv = c_void_p()
     hbmp = gdi32.CreateDIBSection(hdc_screen, byref(bmi), DIB_RGB_COLORS,
                                   byref(ppv), None, 0)
     old = gdi32.SelectObject(hdc_mem, hbmp)
-    data = img.convert("RGBA").tobytes("raw", "BGRA")
-    ctypes.memmove(ppv, data, len(data))
+    ctypes.memmove(ppv, img.tobytes("raw", "BGRA"), w * h * 4)
     blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
     size = SIZE(w, h)
     pt_src = POINT(0, 0)
-    ok = user32.UpdateLayeredWindow(
-        hwnd, hdc_screen, None, byref(size), hdc_mem, byref(pt_src),
-        0, byref(blend), ULW_ALPHA)
+    ok = user32.UpdateLayeredWindow(hwnd, hdc_screen, None, byref(size),
+                                    hdc_mem, byref(pt_src), 0,
+                                    byref(blend), ULW_ALPHA)
     gdi32.SelectObject(hdc_mem, old)
     gdi32.DeleteObject(hbmp)
     gdi32.DeleteDC(hdc_mem)
@@ -135,13 +131,25 @@ def _font(size, bold=True):
     return ImageFont.load_default()
 
 
+def _text_color_on(rgb):
+    """在给定底色上取纯黑或纯白，保证对比度"""
+    r, g, b = rgb
+    lum = (0.299 * r + 0.587 * g + 0.114 * b)
+    return (0, 0, 0) if lum > 150 else (255, 255, 255)
+
+
 class FloatingWidget:
-    def __init__(self, cfg, on_quit, on_refresh, on_settings):
+    def __init__(self, cfg, on_quit, on_refresh, on_settings,
+                 on_move_confirm=None):
         self.cfg = cfg
         self.on_quit = on_quit
         self.on_refresh = on_refresh
         self.on_settings = on_settings
+        self.on_move_confirm = on_move_confirm
         self._drag_off = None
+        self._move_mode = False
+        self._confirm_hit = False
+        self._confirm_rect = None      # 逻辑像素 (x0, y0, x1, y1)
         self._x = self._y = 0
         self._last_state = (None, None, False, "")
 
@@ -165,15 +173,14 @@ class FloatingWidget:
     # ---------- 菜单 ----------
     def _build_menu(self):
         self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="移动位置", command=self._menu_move)
         self.menu.add_command(label="立即刷新", command=self.on_refresh)
         self.menu.add_command(label="设置…", command=self.on_settings)
-        self.menu.add_command(label="锁定位置", command=self._toggle_lock)
-        self.menu.add_command(label="隐藏浮窗", command=self.hide)
         self.menu.add_separator()
         self.menu.add_command(label="退出", command=self.on_quit)
 
-    def _toggle_lock(self):
-        self.cfg.set("widget.locked", not self.cfg.get("widget.locked"))
+    def _menu_move(self):
+        self.set_move_mode(True)
 
     # ---------- 配置应用 ----------
     def _apply_config(self, initial=False):
@@ -181,8 +188,7 @@ class FloatingWidget:
         self.W, self.H, self.fs_big = SIZES.get(w["size"], SIZES["medium"])
         self.pal = palette(w["theme"])
         self.accent = w["accent"]
-        self._bg_alpha = float(w["opacity_bg"])
-        self._text_alpha = float(w["opacity_text"])
+        self._opacity = float(w["opacity"])
 
         if initial:
             corner = w.get("corner")
@@ -198,11 +204,11 @@ class FloatingWidget:
         else:
             self.win.geometry(f"{self.W}x{self.H}+{self._x}+{self._y}")
 
-        self._apply_click_through(bool(w.get("click_through", True)))
+        # 鼠标穿透是默认行为；仅在「移动位置」模式下临时关闭
+        self._apply_click_through(not self._move_mode)
         self._render(self._last_state)
 
     def _init_layered(self):
-        """初始化分层窗口（逐像素 alpha）"""
         hwnd = _top_hwnd(self.win)
         if not hwnd:
             return
@@ -219,8 +225,7 @@ class FloatingWidget:
         if not hwnd:
             return
         self._click_through = bool(enable)
-        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ex |= WS_EX_LAYERED
+        ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED
         if self._click_through:
             ex |= WS_EX_TRANSPARENT
         else:
@@ -229,6 +234,20 @@ class FloatingWidget:
         user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
                             SWP_FRAMECHANGED)
+
+    # ---------- 移动位置模式 ----------
+    def set_move_mode(self, enabled):
+        """开启后可拖动；右上角出现 ✓，确认后保存位置并恢复穿透"""
+        self._move_mode = bool(enabled)
+        self._apply_click_through(not self._move_mode)
+        self._render(self._last_state)
+
+    def confirm_move(self):
+        self.cfg.set("widget.position", [self._x, self._y])
+        self.cfg.set("widget.corner", None)
+        self.set_move_mode(False)
+        if self.on_move_confirm:
+            self.on_move_confirm()
 
     # ---------- 位置 ----------
     def _place(self):
@@ -279,95 +298,100 @@ class FloatingWidget:
 
     # ---------- 渲染 ----------
     def _render(self, state):
-        """电池图标即背景：电池外形 + 内部填充 + 居中百分比数字"""
+        """一个电池：一条轮廓线 + 内部电量填充 + 居中百分比数字
+
+        数字固定为纯白且不随不透明度变化（始终清晰可读）。
+        """
         percent, charging, offline, device_label = state
         pal = self.pal
-        S = 3                                   # 超采样倍数（抗锯齿）
+        S = 4                                   # 超采样倍数（SSAA 抗锯齿）
         W, H = self.W * S, self.H * S
-        # bg(电池)/文字 两组独立透明度
-        bg_a = int(255 * max(0.0, min(1.0, self._bg_alpha)))
-        tx_a = int(255 * max(0.0, min(1.0, self._text_alpha)))
+        a = int(255 * max(0.1, min(1.0, self._opacity)))
 
-        # 只有纯黑/纯白两种文字色；电池本身作为背景色块
-        light = hex_to_rgb(pal["text"])[0] < 128
-        if light:
-            body_rgb, edge_rgb, ink_rgb = (0xEA, 0xEA, 0xEF), \
-                (0xB6, 0xB6, 0xBE), (0, 0, 0)
-        else:
-            body_rgb, edge_rgb, ink_rgb = (0x23, 0x23, 0x27), \
-                (0x47, 0x47, 0x4D), (255, 255, 255)
-        body = body_rgb + (bg_a,)
-        edge = edge_rgb + (bg_a,)
-        ink = ink_rgb + (tx_a,)
+        # 电池统一深色内底 + 白轮廓线；数字恒为纯白且不透明
+        # （这样无论主题、透明度、电量高低，白色数字都有深色衬托）
+        body = (28, 28, 32) + (a,)
+        ink = (255, 255, 255) + (a,)
+        ink_num = (255, 255, 255, 255)
 
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
 
-        # ---- 电池几何 ----
-        m = 3 * S                                  # 外留白
-        cap_w = max(3 * S, int(W * 0.045))         # 正极凸起宽度
-        line = max(2, int(1.4 * S))                # 描边线宽
+        m = 2 * S
+        lw = max(4, int(2.0 * S))                   # 唯一的一条轮廓线（够粗才不显断续）
+        cap_w = max(3 * S, int(W * 0.048))          # 正极凸起
         bx0, by0 = m, m
-        bx1, by1 = W - m - cap_w - 2 * S, H - m
-        rad = int((by1 - by0) * 0.30)
+        bx1, by1 = W - m - cap_w - S, H - m
+        rad = int((by1 - by0) * 0.28)
 
-        # 电池外壳（实色底 = 数字的背景）+ 细描边保证任何桌面背景上都能看清形状
-        d.rounded_rectangle([bx0, by0, bx1, by1], radius=rad, fill=body,
-                            outline=edge, width=line)
-        # 正极
-        cap_h = (by1 - by0) * 0.38
-        cap_cy = (by0 + by1) / 2
-        d.rounded_rectangle([bx1 + line, cap_cy - cap_h / 2,
-                             bx1 + cap_w, cap_cy + cap_h / 2],
-                            radius=max(1, int(cap_h * 0.25)), fill=body,
-                            outline=edge, width=max(1, line // 2))
+        # 内部淡底
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=rad, fill=body)
 
-        # ---- 内部电量填充 ----
-        in_pad = int(3.2 * S)
-        ix0, iy0 = bx0 + in_pad, by0 + in_pad
-        ix1, iy1 = bx1 - in_pad, by1 - in_pad
+        # 电量填充（无描边）
+        ix0, iy0 = bx0 + lw, by0 + lw
+        ix1, iy1 = bx1 - lw, by1 - lw
         iw = ix1 - ix0
-        irad = max(1, rad - in_pad)
-
         if offline or percent is None:
             pct_txt = "--"
-            color = hex_to_rgb(pal["text2"])
         else:
             from .theme import battery_color
-            color = hex_to_rgb(battery_color(percent, charging,
-                                             self.accent))
+            base = hex_to_rgb(battery_color(percent, charging, self.accent))
+            fill_rgb = tuple(int(c * 0.86) for c in base)   # 略加深，白字更清晰
             pct_txt = str(percent)
+            fw = max(int(2 * S), int(iw * percent / 100))
+            d.rounded_rectangle([ix0, iy0, ix0 + fw, iy1],
+                                radius=max(1, rad - lw),
+                                fill=fill_rgb + (a,))
 
-        if pct_txt != "--":
-            fw = max(int(2.5 * S), int(iw * percent / 100))
-            # 填充色略加深并透出一点底色，保证纯白/纯黑数字的对比度
-            deep = tuple(int(c * 0.86) for c in color)
-            d.rounded_rectangle([ix0, iy0, ix0 + fw, iy1], radius=irad,
-                                fill=deep + (int(tx_a * 0.92),))
-        else:
-            # 无数据：内部画一根斜线表示未知
-            d.line([ix0 + 2*S, iy1 - 2*S, ix1 - 2*S, iy0 + 2*S],
-                   fill=color + (tx_a,), width=line)
+        # 轮廓线（唯一的一条线）
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=rad, outline=ink,
+                            width=lw)
+        # 正极（同样只用线画）
+        cap_h = (by1 - by0) * 0.40
+        cc = (by0 + by1) / 2
+        d.rectangle([bx1 + lw, cc - cap_h / 2, bx1 + cap_w, cc + cap_h / 2],
+                    outline=ink, width=lw)
 
-        # ---- 数字（纯白/纯黑，居中于电池内部，叠在填充上）----
-        fs = self.fs_big if len(pct_txt) < 3 else int(self.fs_big * 0.84)
+        # 数字（纯白、不透明）
+        fs = self.fs_big if len(pct_txt) < 3 else int(self.fs_big * 0.82)
         f_num = _font(fs * S)
-        cx = (ix0 + ix1) / 2
-        cy = (iy0 + iy1) / 2
+        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
         if pct_txt == "--":
-            d.text((cx, cy), pct_txt, font=f_num, fill=ink, anchor="mm")
+            d.text((cx, cy), pct_txt, font=f_num, fill=ink_num, anchor="mm")
         else:
             f_sign = _font(max(8, int(fs * 0.46)) * S)
             w_num = d.textlength(pct_txt, font=f_num)
             w_sign = d.textlength("%", font=f_sign)
-            total = w_num + w_sign * 1.05
+            total = w_num + w_sign * 1.02
             x0 = cx - total / 2
-            d.text((x0, cy), pct_txt, font=f_num, fill=ink, anchor="lm")
-            d.text((x0 + w_num + w_sign * 0.08, cy - fs * 0.24 * S), "%",
-                   font=f_sign, fill=ink, anchor="lm")
+            d.text((x0, cy), pct_txt, font=f_num, fill=ink_num, anchor="lm")
+            d.text((x0 + w_num + w_sign * 0.05, cy - fs * 0.24 * S), "%",
+                   font=f_sign, fill=ink_num, anchor="lm")
 
-        # 先转预乘再缩放（预乘空间下的插值才不会让半透明边缘发黑）
-        img = _premultiply(img).resize((self.W, self.H), Image.LANCZOS)
+        # ---- 移动模式：电池内部右上角 ✓ 确认按钮 ----
+        self._confirm_rect = None
+        if self._move_mode:
+            r = max(8, int(self.H * 0.26))          # 逻辑像素
+            pad = int(lw / S) + 2
+            bx1_log, by0_log = bx1 / S, by0 / S
+            gx = bx1_log - r - pad                  # 圆心（逻辑像素）
+            gy = by0_log + r + pad
+            accent = hex_to_rgb(self.accent)
+            on_acc = _text_color_on(accent)
+            d.ellipse([(gx - r) * S, (gy - r) * S,
+                       (gx + r) * S, (gy + r) * S],
+                      fill=accent + (255,), outline=(255, 255, 255, 255),
+                      width=max(1, S // 2))
+            # 对号
+            d.line([((gx - r * 0.42) * S, (gy + r * 0.02) * S),
+                    ((gx - r * 0.10) * S, (gy + r * 0.36) * S),
+                    ((gx + r * 0.46) * S, (gy - r * 0.34) * S)],
+                   fill=on_acc + (255,), width=max(2, int(1.5 * S)),
+                   joint="curve")
+            self._confirm_rect = (gx - r, gy - r, gx + r, gy + r)
+
+        # 预乘后缩放；用 BOX（面积平均）避免 LANCZOS 过冲在边缘产生白点
+        img = _premultiply(img).resize((self.W, self.H), Image.BOX)
         hwnd = _top_hwnd(self.win)
         if hwnd:
             _push_layered(hwnd, img)
@@ -380,9 +404,18 @@ class FloatingWidget:
         except tk.TclError:
             pass
 
-    # ---------- 交互 ----------
+    # ---------- 交互（仅「移动位置」模式下可操作）----------
+    def _in_confirm(self, ex, ey):
+        if not self._confirm_rect:
+            return False
+        x0, y0, x1, y1 = self._confirm_rect
+        return x0 <= ex <= x1 and y0 <= ey <= y1
+
     def _press(self, e):
-        if self.cfg.get("widget.locked") or self._click_through:
+        if not self._move_mode:
+            return
+        if self._in_confirm(e.x, e.y):
+            self._confirm_hit = True
             return
         self._drag_off = (e.x_root - self._x, e.y_root - self._y)
 
@@ -394,10 +427,12 @@ class FloatingWidget:
         self._place()
 
     def _release(self, e):
-        if self._drag_off is not None:
-            self._drag_off = None
-            self.cfg.set("widget.position", [self._x, self._y])
-            self.cfg.set("widget.corner", None)
+        if self._confirm_hit:
+            self._confirm_hit = False
+            if self._in_confirm(e.x, e.y):
+                self.confirm_move()
+            return
+        self._drag_off = None
 
     def hide(self):
         self.win.withdraw()
