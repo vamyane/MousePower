@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 构建产物
+build/
+dist/
+installer/app/
+installer/Output/
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+
+# 运行日志
+*.log
+PLAN.md
