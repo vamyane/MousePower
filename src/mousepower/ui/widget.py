@@ -14,11 +14,13 @@ from ctypes import (Structure, byref, c_int, c_uint, c_void_p, c_ubyte,
                     c_ushort, c_ulong, wintypes)
 import tkinter as tk
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .theme import palette, hex_to_rgb
 
-SIZES = {           # (宽, 高, 数字字号, 小字字号, 电池格宽)
+PAD = 9             # 窗口内为投影预留的留白（逻辑像素）
+
+SIZES = {           # 卡片尺寸 (宽, 高, 数字字号, 小字字号, 电池格宽)
     "small":  (114, 50, 24, 12, 26),
     "medium": (152, 62, 34, 14, 38),
     "large":  (186, 76, 44, 16, 46),
@@ -78,8 +80,24 @@ def _top_hwnd(win):
         return None
 
 
+def _premultiply(img):
+    """普通 alpha → 预乘 alpha
+
+    UpdateLayeredWindow 用 AC_SRC_ALPHA 时要求位图为预乘 alpha（RGB 已乘 α）。
+    直接传普通 alpha 的图会导致半透明像素被二次乘 α —— 表现就是
+    圆角边缘出现黑边、半透明卡片发灰发脏。
+    """
+    r, g, b, a = img.convert("RGBA").split()
+    return Image.merge("RGBA", (
+        ImageChops.multiply(r, a),
+        ImageChops.multiply(g, a),
+        ImageChops.multiply(b, a),
+        a,
+    ))
+
+
 def _push_layered(hwnd, img):
-    """把 RGBA 图像作为窗口内容推送（逐像素 alpha）"""
+    """把 RGBA 图像作为窗口内容推送（逐像素 alpha，img 须为预乘）"""
     w, h = img.size
     hdc_screen = user32.GetDC(0)
     hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
@@ -162,8 +180,10 @@ class FloatingWidget:
     # ---------- 配置应用 ----------
     def _apply_config(self, initial=False):
         w = self.cfg.widget
-        self.W, self.H, fs_big, fs_sub, bar_w = SIZES.get(
+        self.CW, self.CH, fs_big, fs_sub, bar_w = SIZES.get(
             w["size"], SIZES["medium"])
+        # 窗口比卡片大一圈，用于容纳投影
+        self.W, self.H = self.CW + 2 * PAD, self.CH + 2 * PAD
         self.pal = palette(w["theme"])
         self.accent = w["accent"]
         self.fs_big, self.fs_sub, self.bar_w = fs_big, fs_sub, bar_w
@@ -269,23 +289,41 @@ class FloatingWidget:
         pal = self.pal
         S = 3                                   # 超采样倍数（抗锯齿）
         W, H = self.W * S, self.H * S
+        # 卡片区域（窗口内缩 PAD，四周留给投影）
+        cx0, cy0 = PAD * S, PAD * S
+        cx1, cy1 = cx0 + self.CW * S, cy0 + self.CH * S
+        mid_x, mid_y = cx0 + self.CW * S // 2, cy0 + self.CH * S // 2
+        rad = 16 * S
+        # 背景透明度支持 0%（卡片完全消失，只留内容悬浮）
         bg_a = int(255 * max(0.0, min(1.0, self._bg_alpha)))
         tx_a = int(255 * max(0.0, min(1.0, self._text_alpha)))
 
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+
+        # ---- 投影：半透明卡片靠它保持"实体感" ----
+        shadow_a = int(135 * min(1.0, self._bg_alpha * 2.5))
+        if shadow_a > 0:
+            sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(sh)
+            sd.rounded_rectangle([cx0 + 1*S, cy0 + 3*S, cx1 + 1*S, cy1 + 3*S],
+                                 radius=rad, fill=(0, 0, 0, shadow_a))
+            sh = sh.filter(ImageFilter.GaussianBlur(3.4 * S))
+            img = Image.alpha_composite(img, sh)
+
         d = ImageDraw.Draw(img)
 
-        # 卡片背景（独立透明度）
-        card = hex_to_rgb(pal["card"])
-        border = hex_to_rgb(pal["card_border"])
-        d.rounded_rectangle([2*S, 2*S, W-2*S, H-2*S], radius=16*S,
-                            fill=card + (bg_a,),
-                            outline=border + (bg_a,), width=max(1, S))
+        # ---- 卡片背景（独立透明度；为 0 时完全不画）----
+        if bg_a > 0:
+            card = hex_to_rgb(pal["card"])
+            border = hex_to_rgb(pal["card_border"])
+            d.rounded_rectangle([cx0, cy0, cx1, cy1], radius=rad,
+                                fill=card + (bg_a,),
+                                outline=border + (bg_a,), width=max(1, S))
 
         # ---- 前景内容（独立透明度）----
         t1 = hex_to_rgb(pal["text"]) + (tx_a,)
         t2 = hex_to_rgb(pal["text2"]) + (tx_a,)
-        bx, by = 16 * S, (H - 18 * S) // 2
+        bx, by = cx0 + 16 * S, mid_y - 9 * S
         bw, bh = self.bar_w * S, 18 * S
         d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=4 * S,
                             outline=t2, width=2 * S)
@@ -314,25 +352,34 @@ class FloatingWidget:
         fs_big = self.fs_big if len(pct_txt) < 3 else int(self.fs_big * 0.82)
         f_big = _font(fs_big * S)
         f_pct = _font(max(9, int(fs_big * 0.38) * S))
+        # 背景接近全透时给内容加描边，保证在任何桌面背景上都清晰可读
+        stroke = {}
+        if bg_a < 70:
+            tr, tg, tb = hex_to_rgb(pal["text"])
+            dark_text = (tr + tg + tb) / 3 < 128
+            sc = (255, 255, 255, tx_a) if dark_text else (0, 0, 0, tx_a)
+            stroke = {"stroke_width": max(1, int(0.75 * S)),
+                      "stroke_fill": sc}
 
         tx = bx + bw + 12 * S
-        d.text((tx, H // 2 - 1*S), pct_txt, font=f_big, fill=t1,
-               anchor="lm")
+        d.text((tx, mid_y - 1*S), pct_txt, font=f_big, fill=t1,
+               anchor="lm", **stroke)
         pct_w = d.textlength(pct_txt, font=f_big)
-        d.text((tx + pct_w + 1*S, H // 2 - 1*S - fs_big * 0.30 * S),
-               "%", font=f_pct, fill=t2, anchor="lm")
+        d.text((tx + pct_w + 1*S, mid_y - 1*S - fs_big * 0.30 * S),
+               "%", font=f_pct, fill=t2, anchor="lm", **stroke)
         # 设备名按可用宽度动态截断，避免溢出卡片
-        max_w = W - 32 * S
+        max_w = self.CW * S - 32 * S
         sub_disp = sub[:26]
         if d.textlength(sub_disp, font=f_sub) > max_w:
             while sub_disp and d.textlength(sub_disp + "…",
                                             font=f_sub) > max_w:
                 sub_disp = sub_disp[:-1]
             sub_disp += "…"
-        d.text((W // 2, H - 12 * S), sub_disp, font=f_sub, fill=t2,
-               anchor="mm")
+        d.text((mid_x, cy1 - 12 * S), sub_disp, font=f_sub, fill=t2,
+               anchor="mm", **stroke)
 
-        img = img.resize((self.W, self.H), Image.LANCZOS)
+        # 先转预乘再缩放（预乘空间下的插值才不会让半透明边缘发黑）
+        img = _premultiply(img).resize((self.W, self.H), Image.LANCZOS)
         hwnd = _top_hwnd(self.win)
         if hwnd:
             _push_layered(hwnd, img)

@@ -254,11 +254,16 @@ class SettingsWindow:
         # ---- 卡片：浮窗外观 ----
         c1 = self._card(inner, "浮窗外观")
         row = self._row(c1, "背景透明度")
-        Slider(row, self.cfg.get("widget.opacity_bg"), 0.05, 1.0,
+        Slider(row, self.cfg.get("widget.opacity_bg"), 0.0, 1.0,
                self._on_opacity_bg, pal, accent).pack(side="right")
         row = self._row(c1, "内容不透明度")
         Slider(row, self.cfg.get("widget.opacity_text"), 0.2, 1.0,
                self._on_opacity_text, pal, accent).pack(side="right")
+        tk.Label(c1, text="背景透明可拉到 0%（卡片消失，只剩数字文字悬浮，"
+                          "会自动加描边保证可读）",
+                 font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
+                 anchor="w", wraplength=430, justify="left").pack(
+            fill="x", padx=16, pady=(0, 4))
         row = self._row(c1, "鼠标穿透")
         Toggle(row, self.cfg.get("widget.click_through"),
                self._set_click_through, pal).pack(side="right")
