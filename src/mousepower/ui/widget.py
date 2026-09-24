@@ -14,16 +14,14 @@ from ctypes import (Structure, byref, c_int, c_uint, c_void_p, c_ubyte,
                     c_ushort, c_ulong, wintypes)
 import tkinter as tk
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .theme import palette, hex_to_rgb
 
-PAD = 9             # 窗口内为投影预留的留白（逻辑像素）
-
-SIZES = {           # 卡片尺寸 (宽, 高, 数字字号, 小字字号, 电池格宽)
-    "small":  (114, 50, 24, 12, 26),
-    "medium": (152, 62, 34, 14, 38),
-    "large":  (186, 76, 44, 16, 46),
+SIZES = {           # (宽, 高, 数字字号) —— 比例按电池形状设计
+    "small":  (88, 40, 17),
+    "medium": (110, 48, 22),
+    "large":  (134, 58, 27),
 }
 
 GWL_EXSTYLE = -20
@@ -180,13 +178,9 @@ class FloatingWidget:
     # ---------- 配置应用 ----------
     def _apply_config(self, initial=False):
         w = self.cfg.widget
-        self.CW, self.CH, fs_big, fs_sub, bar_w = SIZES.get(
-            w["size"], SIZES["medium"])
-        # 窗口比卡片大一圈，用于容纳投影
-        self.W, self.H = self.CW + 2 * PAD, self.CH + 2 * PAD
+        self.W, self.H, self.fs_big = SIZES.get(w["size"], SIZES["medium"])
         self.pal = palette(w["theme"])
         self.accent = w["accent"]
-        self.fs_big, self.fs_sub, self.bar_w = fs_big, fs_sub, bar_w
         self._bg_alpha = float(w["opacity_bg"])
         self._text_alpha = float(w["opacity_text"])
 
@@ -285,98 +279,92 @@ class FloatingWidget:
 
     # ---------- 渲染 ----------
     def _render(self, state):
+        """电池图标即背景：电池外形 + 内部填充 + 居中百分比数字"""
         percent, charging, offline, device_label = state
         pal = self.pal
         S = 3                                   # 超采样倍数（抗锯齿）
         W, H = self.W * S, self.H * S
-        # 卡片区域（窗口内缩 PAD，四周留给投影）
-        cx0, cy0 = PAD * S, PAD * S
-        cx1, cy1 = cx0 + self.CW * S, cy0 + self.CH * S
-        mid_x, mid_y = cx0 + self.CW * S // 2, cy0 + self.CH * S // 2
-        rad = 16 * S
-        # 背景透明度支持 0%（卡片完全消失，只留内容悬浮）
+        # bg(电池)/文字 两组独立透明度
         bg_a = int(255 * max(0.0, min(1.0, self._bg_alpha)))
         tx_a = int(255 * max(0.0, min(1.0, self._text_alpha)))
 
+        # 只有纯黑/纯白两种文字色；电池本身作为背景色块
+        light = hex_to_rgb(pal["text"])[0] < 128
+        if light:
+            body_rgb, edge_rgb, ink_rgb = (0xEA, 0xEA, 0xEF), \
+                (0xB6, 0xB6, 0xBE), (0, 0, 0)
+        else:
+            body_rgb, edge_rgb, ink_rgb = (0x23, 0x23, 0x27), \
+                (0x47, 0x47, 0x4D), (255, 255, 255)
+        body = body_rgb + (bg_a,)
+        edge = edge_rgb + (bg_a,)
+        ink = ink_rgb + (tx_a,)
+
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-
-        # ---- 投影：半透明卡片靠它保持"实体感" ----
-        shadow_a = int(135 * min(1.0, self._bg_alpha * 2.5))
-        if shadow_a > 0:
-            sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            sd = ImageDraw.Draw(sh)
-            sd.rounded_rectangle([cx0 + 1*S, cy0 + 3*S, cx1 + 1*S, cy1 + 3*S],
-                                 radius=rad, fill=(0, 0, 0, shadow_a))
-            sh = sh.filter(ImageFilter.GaussianBlur(3.4 * S))
-            img = Image.alpha_composite(img, sh)
-
         d = ImageDraw.Draw(img)
 
-        # ---- 卡片背景（独立透明度；为 0 时完全不画）----
-        if bg_a > 0:
-            card = hex_to_rgb(pal["card"])
-            border = hex_to_rgb(pal["card_border"])
-            d.rounded_rectangle([cx0, cy0, cx1, cy1], radius=rad,
-                                fill=card + (bg_a,),
-                                outline=border + (bg_a,), width=max(1, S))
+        # ---- 电池几何 ----
+        m = 3 * S                                  # 外留白
+        cap_w = max(3 * S, int(W * 0.045))         # 正极凸起宽度
+        line = max(2, int(1.4 * S))                # 描边线宽
+        bx0, by0 = m, m
+        bx1, by1 = W - m - cap_w - 2 * S, H - m
+        rad = int((by1 - by0) * 0.30)
 
-        # ---- 前景内容（独立透明度）----
-        t1 = hex_to_rgb(pal["text"]) + (tx_a,)
-        t2 = hex_to_rgb(pal["text2"]) + (tx_a,)
-        bx, by = cx0 + 16 * S, mid_y - 9 * S
-        bw, bh = self.bar_w * S, 18 * S
-        d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=4 * S,
-                            outline=t2, width=2 * S)
-        d.rectangle([bx + bw + 1, by + 5*S, bx + bw + 3*S, by + bh - 5*S],
-                    fill=t2)
+        # 电池外壳（实色底 = 数字的背景）+ 细描边保证任何桌面背景上都能看清形状
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=rad, fill=body,
+                            outline=edge, width=line)
+        # 正极
+        cap_h = (by1 - by0) * 0.38
+        cap_cy = (by0 + by1) / 2
+        d.rounded_rectangle([bx1 + line, cap_cy - cap_h / 2,
+                             bx1 + cap_w, cap_cy + cap_h / 2],
+                            radius=max(1, int(cap_h * 0.25)), fill=body,
+                            outline=edge, width=max(1, line // 2))
 
-        if offline:
-            d.line([bx + 2*S, by + bh - 2*S, bx + bw - 2*S, by + 2*S],
-                   fill=hex_to_rgb(pal["bad"]) + (tx_a,), width=2 * S)
-            pct_txt, sub = "--", device_label or "未检测到鼠标"
-        elif percent is None:
-            pct_txt, sub = "--", device_label or "读取中…"
+        # ---- 内部电量填充 ----
+        in_pad = int(3.2 * S)
+        ix0, iy0 = bx0 + in_pad, by0 + in_pad
+        ix1, iy1 = bx1 - in_pad, by1 - in_pad
+        iw = ix1 - ix0
+        irad = max(1, rad - in_pad)
+
+        if offline or percent is None:
+            pct_txt = "--"
+            color = hex_to_rgb(pal["text2"])
         else:
             from .theme import battery_color
             color = hex_to_rgb(battery_color(percent, charging,
                                              self.accent))
-            fill_w = max(2*S, int((bw - 4*S) * percent / 100))
-            d.rounded_rectangle([bx + 2*S, by + 2*S, bx + 2*S + fill_w,
-                                 by + bh - 2*S], radius=2 * S,
-                                fill=color + (tx_a,))
             pct_txt = str(percent)
-            sub = device_label + (" · 充电中" if charging else "")
 
-        f_sub = _font(self.fs_sub * S, bold=False)
-        # 三位数（100%）自动缩小字号，避免挤压
-        fs_big = self.fs_big if len(pct_txt) < 3 else int(self.fs_big * 0.82)
-        f_big = _font(fs_big * S)
-        f_pct = _font(max(9, int(fs_big * 0.38) * S))
-        # 背景接近全透时给内容加描边，保证在任何桌面背景上都清晰可读
-        stroke = {}
-        if bg_a < 70:
-            tr, tg, tb = hex_to_rgb(pal["text"])
-            dark_text = (tr + tg + tb) / 3 < 128
-            sc = (255, 255, 255, tx_a) if dark_text else (0, 0, 0, tx_a)
-            stroke = {"stroke_width": max(1, int(0.75 * S)),
-                      "stroke_fill": sc}
+        if pct_txt != "--":
+            fw = max(int(2.5 * S), int(iw * percent / 100))
+            # 填充色略加深并透出一点底色，保证纯白/纯黑数字的对比度
+            deep = tuple(int(c * 0.86) for c in color)
+            d.rounded_rectangle([ix0, iy0, ix0 + fw, iy1], radius=irad,
+                                fill=deep + (int(tx_a * 0.92),))
+        else:
+            # 无数据：内部画一根斜线表示未知
+            d.line([ix0 + 2*S, iy1 - 2*S, ix1 - 2*S, iy0 + 2*S],
+                   fill=color + (tx_a,), width=line)
 
-        tx = bx + bw + 12 * S
-        d.text((tx, mid_y - 1*S), pct_txt, font=f_big, fill=t1,
-               anchor="lm", **stroke)
-        pct_w = d.textlength(pct_txt, font=f_big)
-        d.text((tx + pct_w + 1*S, mid_y - 1*S - fs_big * 0.30 * S),
-               "%", font=f_pct, fill=t2, anchor="lm", **stroke)
-        # 设备名按可用宽度动态截断，避免溢出卡片
-        max_w = self.CW * S - 32 * S
-        sub_disp = sub[:26]
-        if d.textlength(sub_disp, font=f_sub) > max_w:
-            while sub_disp and d.textlength(sub_disp + "…",
-                                            font=f_sub) > max_w:
-                sub_disp = sub_disp[:-1]
-            sub_disp += "…"
-        d.text((mid_x, cy1 - 12 * S), sub_disp, font=f_sub, fill=t2,
-               anchor="mm", **stroke)
+        # ---- 数字（纯白/纯黑，居中于电池内部，叠在填充上）----
+        fs = self.fs_big if len(pct_txt) < 3 else int(self.fs_big * 0.84)
+        f_num = _font(fs * S)
+        cx = (ix0 + ix1) / 2
+        cy = (iy0 + iy1) / 2
+        if pct_txt == "--":
+            d.text((cx, cy), pct_txt, font=f_num, fill=ink, anchor="mm")
+        else:
+            f_sign = _font(max(8, int(fs * 0.46)) * S)
+            w_num = d.textlength(pct_txt, font=f_num)
+            w_sign = d.textlength("%", font=f_sign)
+            total = w_num + w_sign * 1.05
+            x0 = cx - total / 2
+            d.text((x0, cy), pct_txt, font=f_num, fill=ink, anchor="lm")
+            d.text((x0 + w_num + w_sign * 0.08, cy - fs * 0.24 * S), "%",
+                   font=f_sign, fill=ink, anchor="lm")
 
         # 先转预乘再缩放（预乘空间下的插值才不会让半透明边缘发黑）
         img = _premultiply(img).resize((self.W, self.H), Image.LANCZOS)
