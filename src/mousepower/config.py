@@ -8,7 +8,7 @@ import os
 import threading
 
 APP_NAME = "MousePower"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 DEFAULTS = {
     "widget": {

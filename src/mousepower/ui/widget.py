@@ -141,8 +141,8 @@ class FloatingWidget:
         c.create_text(bx + bw + 14, H//2 - 4, text=pct_txt,
                       font=("Segoe UI", self.fs_big, "bold"),
                       fill=pal["text"], anchor="w")
-        pct_off = bx + bw + 14 + (self.fs_big * len(pct_txt) * 0.62)
-        c.create_text(int(pct_off), H//2 - 4 - self.fs_big * 0.55, text="%",
+        pct_off = bx + bw + 14 + (self.fs_big * len(pct_txt) * 0.60)
+        c.create_text(int(pct_off), H//2 - 4 - self.fs_big * 0.42, text="%",
                       font=("Segoe UI", max(9, self.fs_big // 2), "bold"),
                       fill=pal["text2"], anchor="w")
         c.create_text(W//2, H-12, text=sub[:26],

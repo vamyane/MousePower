@@ -21,11 +21,11 @@ PALETTES = {
         "warn": "#ff9f0a", "bad": "#ff453a", "swatch_border": "#5a5a5e",
     },
     "light": {
-        "card": "#f2f2f7", "card_border": "#d1d1d6", "bg": "#000000",
-        "text": "#1c1c1e", "text2": "#8e8e93",
-        "btn": "#e5e5ea", "btn_hover": "#d8d8dc",
-        "panel": "#f7f7fa", "divider": "#e0e0e5", "ok": "#34c759",
-        "warn": "#ff9500", "bad": "#ff3b30", "swatch_border": "#aeaeb2",
+        "card": "#ffffff", "card_border": "#e3e3e8", "bg": "#000000",
+        "text": "#1c1c1e", "text2": "#8a8a8e",
+        "btn": "#eaeaef", "btn_hover": "#dcdce1",
+        "panel": "#f3f3f6", "divider": "#e5e5ea", "ok": "#34c759",
+        "warn": "#ff9500", "bad": "#ff3b30", "swatch_border": "#c7c7cc",
     },
 }
 
