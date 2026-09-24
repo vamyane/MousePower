@@ -32,6 +32,10 @@
 |---|---|
 | ![浮窗](docs/screenshot-widget.png) | ![桌面](docs/screenshot-desktop.png) |
 
+| 设置窗口 · 深色 | 设置窗口 · 浅色 |
+|---|---|
+| ![设置深色](docs/screenshot-settings-dark.png) | ![设置浅色](docs/screenshot-settings-light.png) |
+
 ## 🧭 三层检测架构
 
 ```
