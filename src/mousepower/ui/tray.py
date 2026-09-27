@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-"""MousePower 托盘：数字 / 电池条双模式图标 + 悬停详情 + 低电量通知"""
+"""MousePower 托盘：数字 / 电池条双模式图标 + 悬停详情 + 低电量通知
+
+图标颜色跟随「强调色」设置，与浮窗电池保持一致。
+"""
 import threading
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .theme import battery_color, hex_to_rgb
 
+_RENDER = 256       # 高分辨率绘制后再缩放，小尺寸下更精致
+
 
 def _font(size):
-    for name in ("segoeuib.ttf", "arialbd.ttf", "arial.ttf"):
+    for name in ("segoeuib.ttf", "arialbd.ttf", "msyhbd.ttc",
+                 "segoeui.ttf", "arial.ttf"):
         try:
             return ImageFont.truetype(name, size)
         except OSError:
@@ -16,55 +22,73 @@ def _font(size):
     return ImageFont.load_default()
 
 
+def _ink_on(rgb):
+    """底色上的纯黑/纯白文字色"""
+    r, g, b = rgb
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    return (0, 0, 0) if lum > 150 else (255, 255, 255)
+
+
 def make_icon(style="number", percent=None, charging=False, offline=False,
-              accent="#30d158"):
-    """托盘图标 32x32。style: number=百分比数字, battery=电池格"""
-    S = 64
+              accent="#30d158", size=32):
+    """托盘图标。style: number=数字块, battery=电池条"""
+    S = _RENDER
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    color = battery_color(percent, charging, accent)
+    accent_rgb = hex_to_rgb(accent)
+
     if offline:
-        d.rounded_rectangle([2, 14, S-2, S-14], radius=12,
-                            fill=(120, 120, 120, 235))
-        d.text((S//2, S//2-2), "–", font=_font(30),
-               fill=(255, 255, 255, 255), anchor="mm")
-        return img.resize((32, 32), Image.LANCZOS)
+        # 灰底 + 横杠（与数字块同尺寸，保证托盘里大小一致）
+        d.rounded_rectangle([0, S * 0.10, S, S * 0.90],
+                            radius=int(S * 0.24), fill=(128, 128, 132, 245))
+        d.rounded_rectangle([S * 0.24, S * 0.46, S * 0.76, S * 0.56],
+                            radius=int(S * 0.05), fill=(255, 255, 255, 255))
+        return img.resize((size, size), Image.LANCZOS)
+
+    fill_rgb = hex_to_rgb(battery_color(percent, charging, accent))
+    if charging:
+        fill_rgb = accent_rgb
 
     if style == "battery":
-        d.rounded_rectangle([2, 14, S-2, S-14], radius=12,
-                            fill=(28, 28, 30, 240))
-        # 电池格
-        bx, by, bw, bh = 10, 24, 44, 18
-        d.rounded_rectangle([bx, by, bx+bw, by+bh], radius=4,
-                            outline=(255, 255, 255, 255), width=3)
-        d.rectangle([bx+bw, by+5, bx+bw+5, by+bh-5],
-                    fill=(255, 255, 255, 255))
+        # 电池条：粗轮廓 + 内部填充（图形占满画布）
+        lw = max(2, int(S * 0.065))
+        pad = int(S * 0.02)
+        cap_w = int(S * 0.12)
+        x0, y0 = pad + lw, int(S * 0.23)
+        x1, y1 = S - cap_w - pad - lw, int(S * 0.77)
+        rad = int((y1 - y0) * 0.32)
+        ink = (255, 255, 255, 255)
+        d.rounded_rectangle([x0, y0, x1, y1], radius=rad,
+                            fill=(0, 0, 0, 130))
         if percent is not None:
-            fw = max(4, int((bw-6) * percent / 100))
-            d.rounded_rectangle([bx+3, by+3, bx+2+fw, by+bh-3], radius=2,
-                                fill=color)
-        if charging:
-            # 闪电
-            pts = [(S//2+4, 12), (S//2-8, 34), (S//2+1, 34),
-                   (S//2-4, 52), (S//2+10, 30), (S//2+1, 30)]
-            d.polygon(pts, fill=(255, 255, 255, 255))
+            iw = (x1 - x0) - 2 * lw
+            fw = max(lw, int(iw * percent / 100))
+            d.rounded_rectangle([x0 + lw, y0 + lw, x0 + lw + fw, y1 - lw],
+                                radius=max(1, rad - lw),
+                                fill=fill_rgb + (255,))
+        d.rounded_rectangle([x0, y0, x1, y1], radius=rad, outline=ink,
+                            width=lw)
+        cy = (y0 + y1) / 2
+        ch = (y1 - y0) * 0.44
+        d.rectangle([x1 + lw, cy - ch / 2, x1 + cap_w + lw, cy + ch / 2],
+                    outline=ink, width=lw)
     else:
-        bg = (28, 28, 30, 240) if not charging else (10, 90, 45, 245)
-        d.rounded_rectangle([2, 14, S-2, S-14], radius=12, fill=bg)
+        # 数字块：强调色圆角底 + 纯黑/纯白数字（占满画布）
+        d.rounded_rectangle([0, S * 0.06, S, S * 0.94],
+                            radius=int(S * 0.26),
+                            fill=fill_rgb + (252,))
         txt = str(percent) if percent is not None else "--"
-        f = _font(40 if len(txt) <= 2 else 30)
-        d.text((S//2, S//2-2), txt, font=f,
-              fill=(255, 255, 255, 255), anchor="mm")
-        if charging:
-            d.ellipse([S-14, 16, S-2, 28], fill=(48, 209, 88, 255))
-    return img.resize((32, 32), Image.LANCZOS)
+        f = _font(int(S * (0.60 if len(txt) <= 2 else 0.46)))
+        d.text((S / 2, S * 0.51), txt, font=f,
+               fill=_ink_on(fill_rgb) + (255,), anchor="mm")
+    return img.resize((size, size), Image.LANCZOS)
 
 
 class TrayIcon:
     """pystray 托盘封装（run_detached 由 main 负责时序）"""
 
     def __init__(self, cfg, on_refresh, on_settings, on_quit,
-                 on_toggle_widget, on_toggle_click_through):
+                 on_toggle_widget, on_move_position):
         import pystray
         self.cfg = cfg
         self._icon = pystray.Icon(
@@ -73,25 +97,14 @@ class TrayIcon:
             title="MousePower 启动中…",
             menu=pystray.Menu(
                 pystray.MenuItem("立即刷新", on_refresh, default=True),
+                pystray.MenuItem("移动位置", on_move_position),
                 pystray.MenuItem("显示/隐藏浮窗", on_toggle_widget),
-                pystray.MenuItem(
-                    "鼠标穿透（不遮挡点击）",
-                    on_toggle_click_through,
-                    checked=lambda item: bool(
-                        self.cfg.get("widget.click_through"))),
                 pystray.MenuItem("设置…", on_settings),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", on_quit),
             ))
         self._pystray = pystray
         self._low_notified = False
-
-    def refresh_menu(self):
-        """配置变化后刷新菜单勾选状态"""
-        try:
-            self._icon.update_menu()
-        except Exception:
-            pass
 
     def start_detached(self):
         threading.Thread(target=self._icon.run_detached, daemon=True).start()
@@ -102,10 +115,17 @@ class TrayIcon:
         except Exception:
             pass
 
+    def refresh_menu(self):
+        try:
+            self._icon.update_menu()
+        except Exception:
+            pass
+
     def update(self, device_name, percent, charging, offline):
         style = self.cfg.get("tray.style", "number")
+        accent = self.cfg.get("widget.accent", "#30d158")
         self._icon.icon = make_icon(style, percent, charging, offline,
-                                    self.cfg.get("widget.accent"))
+                                   accent)
         if offline:
             self._icon.title = "MousePower: 未检测到鼠标"
         elif percent is None:

@@ -97,7 +97,7 @@ def _open_devinst(device_id):
 
 def read_bluetooth_batteries():
     """返回 {device_id_lower: BatteryInfo}，只含可读电量的蓝牙设备"""
-    from ..device import BatteryInfo
+    from .device import BatteryInfo
     result = {}
     ids = _list_device_ids(("BTHENUM", "BTHLE"))
     for did in ids:

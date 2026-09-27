@@ -100,16 +100,18 @@ class App:
         self.current = None
         self._timer = None
         self._widget_ready = False
+        self._last_good = None       # 上次有效读数 (percent, charging, label)
 
         self.tray = TrayIcon(
             self.cfg, on_refresh=self.refresh_now,
             on_settings=self.open_settings, on_quit=self.quit,
             on_toggle_widget=self.toggle_widget,
-            on_toggle_click_through=self.toggle_click_through)
+            on_move_position=self.start_move_position)
 
         self.widget = FloatingWidget(
             self.cfg, on_quit=self.quit, on_refresh=self.refresh_now,
-            on_settings=self.open_settings)
+            on_settings=self.open_settings,
+            on_move_confirm=self.on_move_confirmed)
         self._widget_ready = True
 
         self.settings = None
@@ -131,6 +133,14 @@ class App:
                 info = self.scanner.read_battery(dev)
                 self.current = dev
                 label = dev.name or f"{dev.vid_str}:{dev.pid_str}"
+                if info.supported:
+                    self._last_good = (info.percent, info.charging, label)
+                elif self._last_good is not None:
+                    # 本次读不到（接收器在鼠标休眠时会返回空帧）
+                    # → 保留上次有效读数，避免浮窗跳到"--"或 0%
+                    p, c, lb = self._last_good
+                    self._push(p, c, offline=False, device=lb, dev=dev)
+                    return
                 self._push(info.percent, info.charging,
                            offline=not info.supported,
                            device=label, dev=dev)
@@ -172,6 +182,7 @@ class App:
     def on_config_change(self, section):
         if section in ("widget",):
             self.widget.apply_config()
+            self.refresh_now()          # 强调色/主题变化时同步刷新托盘图标
         elif section == "tray":
             self.refresh_now()
         elif section == "general":
@@ -182,11 +193,12 @@ class App:
             self._schedule()
         self.tray.refresh_menu()
 
-    def toggle_click_through(self, icon=None, item=None):
-        """托盘菜单：切换鼠标穿透"""
-        enabled = not self.cfg.get("widget.click_through")
-        self.cfg.set("widget.click_through", enabled)
-        self.widget.apply_config()
+    def start_move_position(self, icon=None, item=None):
+        """托盘菜单：进入「移动位置」模式（关闭穿透，右上角出现 ✓）"""
+        self.widget.set_move_mode(True)
+
+    def on_move_confirmed(self):
+        """用户点 ✓ 确认位置：位置已保存，穿透已恢复"""
         self.tray.refresh_menu()
 
     def toggle_widget(self):

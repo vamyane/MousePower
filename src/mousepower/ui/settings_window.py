@@ -13,6 +13,7 @@ DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 WIN_W, WIN_H = 520, 740
+TITLE_H = 46          # 自绘标题栏高度
 
 
 def _style_window(hwnd, dark):
@@ -180,31 +181,114 @@ class SettingsWindow:
         self.win.withdraw()
         self.win.protocol("WM_DELETE_WINDOW", self.hide)
         self._scroll_canvas = None
+        self._drag = (0, 0)
+        self._centered = False
+        # 无边框 + 自绘标题栏（现代应用观感）
+        try:
+            self.win.overrideredirect(True)
+        except tk.TclError:
+            pass
         self._build()
         self._style_now()
 
+    # ---- 无边框窗口：拖动 / 圆角 ----
+    def _drag_start(self, e):
+        self._drag = (e.x_root - self.win.winfo_x(),
+                      e.y_root - self.win.winfo_y())
+
+    def _drag_move(self, e):
+        self.win.geometry(f"+{e.x_root - self._drag[0]}"
+                          f"+{e.y_root - self._drag[1]}")
+
+    def _apply_round(self):
+        """给无边框窗口加圆角（Win32 SetWindowRgn）"""
+        try:
+            self.win.update_idletasks()
+            hwnd = self.win.winfo_id()
+            w = self.win.winfo_width()
+            h = self.win.winfo_height()
+            r = 14
+            gdi32 = ctypes.windll.gdi32
+            user32 = ctypes.windll.user32
+            rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+            user32.SetWindowRgn(hwnd, rgn, True)
+        except Exception:
+            pass
+
+    def _make_titlebar(self, parent, pal):
+        """自绘标题栏：标题 + 关闭按钮 + 可拖动"""
+        bar = tk.Frame(parent, bg=pal["panel"], height=TITLE_H)
+        bar.pack(fill="x", side="top")
+        bar.pack_propagate(False)
+
+        title = tk.Label(bar, text="设置", font=("Segoe UI Semibold", 12),
+                         bg=pal["panel"], fg=pal["text"], anchor="w")
+        title.pack(side="left", padx=(20, 0))
+
+        close = tk.Canvas(bar, width=46, height=TITLE_H, bg=pal["panel"],
+                          highlightthickness=0, bd=0)
+        close.pack(side="right")
+
+        def draw_close(hover=False):
+            close.delete("all")
+            if hover:
+                close.create_rectangle(0, 0, 46, TITLE_H,
+                                       fill="#e81123", outline="")
+                fg = "#ffffff"
+            else:
+                fg = pal["text"]
+            close.create_line(17, 15, 27, 25, fill=fg, width=2)
+            close.create_line(27, 15, 17, 25, fill=fg, width=2)
+
+        draw_close()
+        close.bind("<Enter>", lambda e: draw_close(True))
+        close.bind("<Leave>", lambda e: draw_close(False))
+        close.bind("<Button-1>", lambda e: self.hide())
+
+        for wdg in (bar, title):
+            wdg.bind("<Button-1>", self._drag_start)
+            wdg.bind("<B1-Motion>", self._drag_move)
+        for wdg in (close,):
+            wdg.bind("<Button-1>", lambda e: self.hide())
+        return bar
+
     def _style_now(self):
-        """应用 DWM 圆角 + 标题栏深浅（跟随主题设置），并按内容自适应高度"""
+        """按主题刷新配色，并按内容自适应高度"""
         theme = self.cfg.get("widget.theme")
         is_dark = theme == "dark" or (theme == "auto"
                                       and system_prefers_dark())
         try:
             self.win.update_idletasks()
-            _style_window(self.win.winfo_id(), is_dark)
-            # 高度自适应：内容高度 + 标题/页脚/边距，不超过屏幕 85%
             need = 0
             try:
-                need = self._inner.winfo_reqheight() + 92
+                need = self._inner.winfo_reqheight() + 108
             except tk.TclError:
                 need = WIN_H
             screen_h = self.win.winfo_screenheight()
             h = max(420, min(need, int(screen_h * 0.85)))
             self.win.geometry(f"{WIN_W}x{h}")
+            self.win.update_idletasks()
+            self._apply_round()
         except Exception:
             pass
 
     def show(self):
         self.win.deiconify()
+        # 首次显示时居中（无边框窗口不会自动居中）
+        if not self._centered:
+            try:
+                self.win.update_idletasks()
+                ww = self.win.winfo_width() or WIN_W
+                hh = self.win.winfo_height() or WIN_H
+                sw = self.win.winfo_screenwidth()
+                sh = self.win.winfo_screenheight()
+                x = max(0, (sw - ww) // 2)
+                y = max(0, int((sh - hh) * 0.42))
+                self.win.geometry(f"+{x}+{y}")
+                self._centered = True
+                self._apply_round()
+            except tk.TclError:
+                pass
         self.win.lift()
         try:
             self.win.focus_force()
@@ -225,9 +309,13 @@ class SettingsWindow:
             x.destroy()
         w.configure(bg=pal["panel"])
 
-        head = tk.Label(w, text="设置", font=("Segoe UI Semibold", 16),
-                        bg=pal["panel"], fg=pal["text"], anchor="w")
-        head.pack(fill="x", padx=24, pady=(14, 4))
+        # ---- 自绘标题栏（无系统标题栏）----
+        self._make_titlebar(w, pal)
+
+        sub = tk.Label(w, text="浮窗外观 · 托盘 · 通知 · 通用",
+                       font=("Segoe UI", 9), bg=pal["panel"],
+                       fg=pal.get("text3", pal["text"]), anchor="w")
+        sub.pack(fill="x", padx=24, pady=(0, 6))
 
         # ---- 滚动容器 ----
         outer = tk.Frame(w, bg=pal["panel"])
@@ -253,29 +341,15 @@ class SettingsWindow:
 
         # ---- 卡片：浮窗外观 ----
         c1 = self._card(inner, "浮窗外观")
-        row = self._row(c1, "电池不透明度")
-        Slider(row, self.cfg.get("widget.opacity_bg"), 0.0, 1.0,
-               self._on_opacity_bg, pal, accent).pack(side="right")
-        row = self._row(c1, "数字不透明度")
-        Slider(row, self.cfg.get("widget.opacity_text"), 0.2, 1.0,
-               self._on_opacity_text, pal, accent).pack(side="right")
-        tk.Label(c1, text="浮窗就是一个电池图标，电量数字显示在电池内部；"
-                          "电池即背景，数字为纯黑或纯白",
+        row = self._row(c1, "不透明度")
+        Slider(row, self.cfg.get("widget.opacity"), 0.2, 1.0,
+               self._on_opacity, pal, accent).pack(side="right")
+        tk.Label(c1, text="浮窗是一个电池图标，百分比显示在电池内部；"
+                          "鼠标点击默认穿透、不遮挡下层软件。"
+                          "要挪动位置就用托盘菜单的「移动位置」",
                  font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
                  anchor="w", wraplength=430, justify="left").pack(
             fill="x", padx=16, pady=(0, 4))
-        row = self._row(c1, "鼠标穿透")
-        Toggle(row, self.cfg.get("widget.click_through"),
-               self._set_click_through, pal).pack(side="right")
-        tk.Label(c1, text="开启后浮窗仅作显示，鼠标点击直接穿透到下层软件；"
-                          "位置改用下方「屏幕位置」调整",
-                 font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
-                 anchor="w", wraplength=430, justify="left").pack(
-            fill="x", padx=16, pady=(0, 4))
-
-        row = self._row(c1, "锁定位置")
-        Toggle(row, self.cfg.get("widget.locked"), self._set_lock,
-               pal).pack(side="right")
 
         row = self._row(c1, "屏幕位置")
         Segmented(
@@ -371,16 +445,8 @@ class SettingsWindow:
         return r
 
     # ---------- 变更处理（即时生效 + 保存） ----------
-    def _on_opacity_bg(self, val):
-        self.cfg.set("widget.opacity_bg", float(val))
-        self.on_change("widget")
-
-    def _on_opacity_text(self, val):
-        self.cfg.set("widget.opacity_text", float(val))
-        self.on_change("widget")
-
-    def _set_click_through(self, v):
-        self.cfg.set("widget.click_through", bool(v))
+    def _on_opacity(self, val):
+        self.cfg.set("widget.opacity", float(val))
         self.on_change("widget")
 
     def _set_corner(self, corner):
@@ -388,10 +454,6 @@ class SettingsWindow:
         self.cfg.set("widget.position", None)
         if self.position_cb:
             self.position_cb(corner)
-
-    def _set_lock(self, v):
-        self.cfg.set("widget.locked", v)
-        self.on_change("widget")
 
     def _set_theme(self, v):
         self.cfg.set("widget.theme", v)
