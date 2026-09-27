@@ -253,29 +253,15 @@ class SettingsWindow:
 
         # ---- 卡片：浮窗外观 ----
         c1 = self._card(inner, "浮窗外观")
-        row = self._row(c1, "电池不透明度")
-        Slider(row, self.cfg.get("widget.opacity_bg"), 0.0, 1.0,
-               self._on_opacity_bg, pal, accent).pack(side="right")
-        row = self._row(c1, "数字不透明度")
-        Slider(row, self.cfg.get("widget.opacity_text"), 0.2, 1.0,
-               self._on_opacity_text, pal, accent).pack(side="right")
-        tk.Label(c1, text="浮窗就是一个电池图标，电量数字显示在电池内部；"
-                          "电池即背景，数字为纯黑或纯白",
+        row = self._row(c1, "不透明度")
+        Slider(row, self.cfg.get("widget.opacity"), 0.2, 1.0,
+               self._on_opacity, pal, accent).pack(side="right")
+        tk.Label(c1, text="浮窗是一个电池图标，百分比显示在电池内部；"
+                          "鼠标点击默认穿透、不遮挡下层软件。"
+                          "要挪动位置就用托盘菜单的「移动位置」",
                  font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
                  anchor="w", wraplength=430, justify="left").pack(
             fill="x", padx=16, pady=(0, 4))
-        row = self._row(c1, "鼠标穿透")
-        Toggle(row, self.cfg.get("widget.click_through"),
-               self._set_click_through, pal).pack(side="right")
-        tk.Label(c1, text="开启后浮窗仅作显示，鼠标点击直接穿透到下层软件；"
-                          "位置改用下方「屏幕位置」调整",
-                 font=("Segoe UI", 8), bg=pal["card"], fg=pal["text2"],
-                 anchor="w", wraplength=430, justify="left").pack(
-            fill="x", padx=16, pady=(0, 4))
-
-        row = self._row(c1, "锁定位置")
-        Toggle(row, self.cfg.get("widget.locked"), self._set_lock,
-               pal).pack(side="right")
 
         row = self._row(c1, "屏幕位置")
         Segmented(
@@ -371,16 +357,8 @@ class SettingsWindow:
         return r
 
     # ---------- 变更处理（即时生效 + 保存） ----------
-    def _on_opacity_bg(self, val):
-        self.cfg.set("widget.opacity_bg", float(val))
-        self.on_change("widget")
-
-    def _on_opacity_text(self, val):
-        self.cfg.set("widget.opacity_text", float(val))
-        self.on_change("widget")
-
-    def _set_click_through(self, v):
-        self.cfg.set("widget.click_through", bool(v))
+    def _on_opacity(self, val):
+        self.cfg.set("widget.opacity", float(val))
         self.on_change("widget")
 
     def _set_corner(self, corner):
@@ -388,10 +366,6 @@ class SettingsWindow:
         self.cfg.set("widget.position", None)
         if self.position_cb:
             self.position_cb(corner)
-
-    def _set_lock(self, v):
-        self.cfg.set("widget.locked", v)
-        self.on_change("widget")
 
     def _set_theme(self, v):
         self.cfg.set("widget.theme", v)

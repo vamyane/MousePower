@@ -72,7 +72,7 @@ def _open(path):
 def read_battery_from_paths(paths):
     """对设备的若干顶层 collection 路径尝试标准电池读取。
     返回 BatteryInfo(percent, charging=None, detail='HID Battery Usage')"""
-    from ..device import BatteryInfo
+    from .device import BatteryInfo
 
     for path in paths:
         h = _open(path)
