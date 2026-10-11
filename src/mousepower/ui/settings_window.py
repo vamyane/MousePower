@@ -7,13 +7,34 @@
 import ctypes
 import tkinter as tk
 
+from PIL import Image, ImageDraw, ImageTk
+
 from .theme import palette, ACCENTS, system_prefers_dark
+from ..dpi import px, scale
+
+# tkinter 的 Canvas 不做抗锯齿（圆形/圆角会出硬边），
+# 所以圆形与圆角控件统一用 PIL 超采样渲染后贴图。
+_SS = 4          # 超采样倍数
+
+
+def _aa_image(w, h, draw_fn, ss=_SS):
+    """PIL 超采样渲染 → PhotoImage（抗锯齿）
+
+    draw_fn(d, s)：d 是 ImageDraw，s 是超采样系数，
+    调用方用逻辑坐标 × s 绘制即可。
+    """
+    img = Image.new("RGBA", (int(w * ss), int(h * ss)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    draw_fn(d, ss)
+    img = img.resize((int(w), int(h)), Image.LANCZOS)
+    return ImageTk.PhotoImage(img)
+
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-WIN_W, WIN_H = 520, 740
-TITLE_H = 46          # 自绘标题栏高度
+WIN_W, WIN_H = 520, 740     # 逻辑像素（实际尺寸按 DPI 放大）
+TITLE_H = 46                # 自绘标题栏高度（逻辑像素）
 
 
 def _style_window(hwnd, dark):
@@ -176,13 +197,19 @@ class SettingsWindow:
         self.position_cb = position_cb
         self.win = tk.Toplevel()
         self.win.title("MousePower 设置")
-        self.win.geometry(f"{WIN_W}x{WIN_H}")
+        self.win.geometry(f"{px(WIN_W)}x{px(WIN_H)}")
         self.win.resizable(False, True)
         self.win.withdraw()
         self.win.protocol("WM_DELETE_WINDOW", self.hide)
         self._scroll_canvas = None
         self._drag = (0, 0)
         self._centered = False
+        # 高 DPI：tkinter 缩放（影响字体与控件默认尺寸）
+        try:
+            self.win.tk.call("tk", "scaling", 96.0 / 72.0 * scale())
+        except tk.TclError:
+            pass
+        # 窗口尺寸按 DPI 放大
         # 无边框 + 自绘标题栏（现代应用观感）
         try:
             self.win.overrideredirect(True)
@@ -207,7 +234,7 @@ class SettingsWindow:
             hwnd = self.win.winfo_id()
             w = self.win.winfo_width()
             h = self.win.winfo_height()
-            r = 14
+            r = px(14)
             gdi32 = ctypes.windll.gdi32
             user32 = ctypes.windll.user32
             rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
@@ -217,7 +244,8 @@ class SettingsWindow:
 
     def _make_titlebar(self, parent, pal):
         """自绘标题栏：标题 + 关闭按钮 + 可拖动"""
-        bar = tk.Frame(parent, bg=pal["panel"], height=TITLE_H)
+        TITLE_PX = px(TITLE_H)
+        bar = tk.Frame(parent, bg=pal["panel"], height=TITLE_PX)
         bar.pack(fill="x", side="top")
         bar.pack_propagate(False)
 
@@ -225,20 +253,22 @@ class SettingsWindow:
                          bg=pal["panel"], fg=pal["text"], anchor="w")
         title.pack(side="left", padx=(20, 0))
 
-        close = tk.Canvas(bar, width=46, height=TITLE_H, bg=pal["panel"],
+        CLOSE_W = px(46)
+        close = tk.Canvas(bar, width=CLOSE_W, height=TITLE_PX,
+                          bg=pal["panel"],
                           highlightthickness=0, bd=0)
         close.pack(side="right")
 
         def draw_close(hover=False):
             close.delete("all")
             if hover:
-                close.create_rectangle(0, 0, 46, TITLE_H,
+                close.create_rectangle(0, 0, CLOSE_W, TITLE_PX,
                                        fill="#e81123", outline="")
                 fg = "#ffffff"
             else:
                 fg = pal["text"]
-            close.create_line(17, 15, 27, 25, fill=fg, width=2)
-            close.create_line(27, 15, 17, 25, fill=fg, width=2)
+            close.create_line(px(17), px(15), px(27), px(25), fill=fg, width=px(2))
+            close.create_line(px(27), px(15), px(17), px(25), fill=fg, width=px(2))
 
         draw_close()
         close.bind("<Enter>", lambda e: draw_close(True))
@@ -261,12 +291,12 @@ class SettingsWindow:
             self.win.update_idletasks()
             need = 0
             try:
-                need = self._inner.winfo_reqheight() + 108
+                need = self._inner.winfo_reqheight() + px(108)
             except tk.TclError:
                 need = WIN_H
             screen_h = self.win.winfo_screenheight()
-            h = max(420, min(need, int(screen_h * 0.85)))
-            self.win.geometry(f"{WIN_W}x{h}")
+            h = max(px(420), min(need, int(screen_h * 0.85)))
+            self.win.geometry(f"{px(WIN_W)}x{h}")
             self.win.update_idletasks()
             self._apply_round()
         except Exception:
@@ -278,8 +308,8 @@ class SettingsWindow:
         if not self._centered:
             try:
                 self.win.update_idletasks()
-                ww = self.win.winfo_width() or WIN_W
-                hh = self.win.winfo_height() or WIN_H
+                ww = self.win.winfo_width() or px(WIN_W)
+                hh = self.win.winfo_height() or px(WIN_H)
                 sw = self.win.winfo_screenwidth()
                 sh = self.win.winfo_screenheight()
                 x = max(0, (sw - ww) // 2)

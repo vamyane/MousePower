@@ -14,6 +14,7 @@ class DeviceInfo:
     serial: str = ""
     interface: int = -1
     is_mouse: bool = True       # 鼠标本体或接收器
+    kind: str = "mouse"         # mouse / keyboard / other（按 PnP 设备类型判定）
 
     @property
     def vid_str(self):
@@ -22,6 +23,11 @@ class DeviceInfo:
     @property
     def pid_str(self):
         return f"{self.pid:04x}"
+
+    @property
+    def kind_label(self):
+        return {"mouse": "鼠标", "keyboard": "键盘",
+                "other": "设备"}.get(self.kind, self.kind)
 
     @property
     def connection_label(self):

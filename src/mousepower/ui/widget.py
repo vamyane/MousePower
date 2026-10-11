@@ -19,8 +19,9 @@ import tkinter as tk
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from .theme import palette, hex_to_rgb
+from ..dpi import px
 
-SIZES = {           # (宽, 高, 数字字号)
+SIZES = {           # (宽, 高, 数字字号) —— 逻辑像素，实际按 DPI 放大
     "small":  (92, 42, 18),
     "medium": (116, 50, 23),
     "large":  (140, 60, 28),
@@ -185,7 +186,8 @@ class FloatingWidget:
     # ---------- 配置应用 ----------
     def _apply_config(self, initial=False):
         w = self.cfg.widget
-        self.W, self.H, self.fs_big = SIZES.get(w["size"], SIZES["medium"])
+        _w, _h, _fs = SIZES.get(w["size"], SIZES["medium"])
+        self.W, self.H, self.fs_big = px(_w), px(_h), px(_fs)
         self.pal = palette(w["theme"])
         self.accent = w["accent"]
         self._opacity = float(w["opacity"])

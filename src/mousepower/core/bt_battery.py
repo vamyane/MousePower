@@ -41,7 +41,15 @@ class DEVPROPKEY(ctypes.Structure):
 
 
 def _list_device_ids(prefixes):
-    """枚举指定 enumerator 前缀的在场设备实例 ID"""
+    """枚举指定 enumerator 前缀的在场设备实例 ID
+
+    ⚠ 必须用 `buf.value.split("\\x00")` 解析。
+      `arr = buf[:]` 得到的是 **str**（create_unicode_buffer 的行为），
+      于是 `arr[i]` 只是单个字符，而 `str.index("", i)` 恒等于 `i` ——
+      循环每轮只前进一个字符，最终得到 ['B','T','H','E','N','U','M',…]
+      这种逐字符碎片，CM_Locate_DevNodeW 必然失败，
+      read_bluetooth_batteries() 永远返回空字典（蓝牙电量 100% 失效）。
+    """
     ids = []
     for prefix in prefixes:
         req = c_ulong(0)
@@ -56,12 +64,9 @@ def _list_device_ids(prefixes):
                 filt, buf, req.value, CM_GETIDLIST_FILTER_PRESENT |
                 CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS:
             continue
-        i = 0
-        arr = buf[:]
-        while i < len(arr) and arr[i]:
-            ids.append(arr[i])
-            i = arr.index("", i)
-            i += 1
+        for did in buf.value.split("\x00"):
+            if did:
+                ids.append(did)
     return ids
 
 

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """MousePower 配置持久化
 配置存放: %APPDATA%\\MousePower\\config.json
 所有 UI 改动即时写入，无独立保存按钮。
@@ -8,7 +8,7 @@ import os
 import threading
 
 APP_NAME = "MousePower"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.7.3"
 
 DEFAULTS = {
     "widget": {
@@ -19,6 +19,10 @@ DEFAULTS = {
         "position": None,         # [x, y] 记忆位置
         "corner": None,           # 位置预设 br/bl/tr/tl（None=自由位置）
         "visible": True,          # 浮窗显示
+        "show_keyboard": False,   # 浮窗右半格显示键盘电量（默认关：键盘多不提供电量）
+        # 鼠标放上充电座后接收器持续返回空帧（官方软件此时显示"充电中"）。
+        # 开启后把"连续读不到"当作充电，浮窗显示闪电而不是让数字消失。
+        "treat_empty_as_charging": True,
     },
     "tray": {
         "style": "number",        # number(数字) / battery(电池条)

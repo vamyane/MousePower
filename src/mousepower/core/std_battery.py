@@ -4,69 +4,34 @@
 适用于固件遵循 USB-IF HID Battery System 规范的设备
 （罗技/雷蛇等新一代设备与多数蓝牙 HID 鼠标）。
 纯 ctypes 调 hid.dll，无第三方依赖。
+
+⚠ 三个曾经导致本通道 **100% 读不出电量** 的错误（已修）：
+  1. `HidP_GetValueCaps` / `HidP_GetUsageValue` 返回 NTSTATUS，成功值是
+     `HIDP_STATUS_SUCCESS = 0x00110000`，**不是 0**。写成 `!= 0` 会把每次
+     成功都当成失败跳过（cap 循环整个不执行）。
+  2. `HIDP_VALUE_CAPS.Reserved2` 是 `USHORT[5]`（10 字节），写成
+     `c_ulong * 5`（20 字节）会让 sizeof 从 60 变 68、LogicalMin 偏移从
+     44 变 52 —— 读到的每个 cap 都是错位的垃圾值，百分比换算全错。
+  3. `CreateFileW` 未声明 restype 时失败返回 -1，而
+     `wintypes.HANDLE(-1).value` 是 0xFFFF...FFFF，`h == INVALID_HANDLE`
+     恒为 False → 打开失败的路径也会继续往下走。
 """
 import ctypes
-from ctypes import wintypes, byref, c_ubyte, c_ulong, c_void_p, Structure
+from ctypes import c_ubyte
 
-hid32 = ctypes.WinDLL("hid.dll")
-kernel32 = ctypes.WinDLL("kernel32.dll")
-
-GENERIC_READ = 0x80000000
-GENERIC_WRITE = 0x40000000
-INVALID_HANDLE = wintypes.HANDLE(-1).value
+from .winhid import (
+    GENERIC_READ, GENERIC_WRITE, USAGE_PAGE_BATTERY, close_handle,
+    free_preparsed, get_caps, get_feature, get_preparsed, get_usage_value,
+    get_value_caps, get_value_caps_by_page, is_invalid, is_vendor_collection,
+    open_device,
+)
 
 HidP_Feature = 2
-USAGE_BATTERY_PAGE = 0x85
-
-# MSDN HIDP_VALUE_CAPS, x64 sizeof=72
-class HIDP_VALUE_CAPS(Structure):
-    _fields_ = [
-        ("UsagePage", ctypes.c_ushort),        # +0
-        ("ReportID", ctypes.c_ubyte),          # +2
-        ("IsAlias", ctypes.c_ubyte),           # +3
-        ("BitField", ctypes.c_ushort),         # +4
-        ("LinkCollection", ctypes.c_ushort),   # +6
-        ("Usage", ctypes.c_ushort),            # +8
-        ("IsStringRange", ctypes.c_ubyte),     # +10
-        ("IsDesignatorRange", ctypes.c_ubyte), # +11
-        ("IsAbsolute", ctypes.c_ubyte),        # +12
-        ("HasNull", ctypes.c_ubyte),           # +13
-        ("Reserved", ctypes.c_ushort),         # +14
-        ("BitSize", c_ulong),                  # +16
-        ("ReportCount", c_ulong),              # +20
-        ("Reserved2", c_ulong * 5),            # +24..43
-        ("UnitsExp", c_ulong),                 # +44
-        ("Units", c_ulong),                    # +48
-        ("LogicalMin", ctypes.c_long),         # +52
-        ("LogicalMax", ctypes.c_long),         # +56
-        ("PhysicalMin", ctypes.c_long),        # +60
-        ("PhysicalMax", ctypes.c_long),        # +64
-    ]
-
-
-class HIDP_CAPS(Structure):
-    _fields_ = [
-        ("Usage", ctypes.c_ushort), ("UsagePage", ctypes.c_ushort),
-        ("InputReportByteLength", ctypes.c_ushort),
-        ("OutputReportByteLength", ctypes.c_ushort),
-        ("FeatureReportByteLength", ctypes.c_ushort),
-        ("Reserved", ctypes.c_ushort * 17),
-        ("NumberLinkCollectionNodes", ctypes.c_ushort),
-        ("NumberInputButtonCaps", ctypes.c_ushort),
-        ("NumberInputValueCaps", ctypes.c_ushort),
-        ("NumberInputDataIndices", ctypes.c_ushort),
-        ("NumberOutputButtonCaps", ctypes.c_ushort),
-        ("NumberOutputValueCaps", ctypes.c_ushort),
-        ("NumberOutputDataIndices", ctypes.c_ushort),
-        ("NumberFeatureButtonCaps", ctypes.c_ushort),
-        ("NumberFeatureValueCaps", ctypes.c_ushort),
-        ("NumberFeatureDataIndices", ctypes.c_ushort),
-    ]
+USAGE_BATTERY_PAGE = USAGE_PAGE_BATTERY
 
 
 def _open(path):
-    return kernel32.CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
-                                3, None, 3, 0, None)
+    return open_device(path, GENERIC_READ | GENERIC_WRITE)
 
 
 def read_battery_from_paths(paths):
@@ -76,53 +41,57 @@ def read_battery_from_paths(paths):
 
     for path in paths:
         h = _open(path)
-        if h == INVALID_HANDLE:
+        if is_invalid(h):
             continue
+        pp = None
         try:
-            pp = c_void_p()
-            if not hid32.HidD_GetPreparsedData(h, byref(pp)):
+            pp = get_preparsed(h)
+            if not pp:
                 continue
-            try:
-                caps = HIDP_CAPS()
-                if not hid32.HidP_GetCaps(pp, byref(caps)):
+            caps, ok = get_caps(pp)
+            if not ok:
+                continue
+            # ⚠ 厂商自定义集合（usage page >= 0xFF00）一律跳过：
+            #   ① 标准电池页是 0x85，厂商页里不可能有；
+            #   ② 实测对这些集合走 HidD_GetPreparsedData/FreePreparsedData
+            #      路径会让进程在之后抛 access violation（本机 4 个厂商
+            #      接口 100% 复现），跳过即彻底规避。
+            if is_vendor_collection(caps.UsagePage):
+                continue
+            n = int(caps.NumberFeatureValueCaps)
+            flen = int(caps.FeatureReportByteLength)
+            if n <= 0 or flen <= 0:
+                # 没有任何 feature value cap，或该接口无 feature 报告
+                continue
+            # 只按电池页精确查询，不做全量枚举（见 winhid 顶部说明）
+            caps_list = get_value_caps_by_page(
+                pp, HidP_Feature, USAGE_BATTERY_PAGE, min(n, 16))
+            if not caps_list:
+                caps_list = [(p, r, u, lo, hi) for (p, r, u, lo, hi)
+                             in get_value_caps(pp, HidP_Feature,
+                                               max(1, min(n, 64)))
+                             if p == USAGE_BATTERY_PAGE]
+            for usage_page, report_id, usage, lo, hi in caps_list:
+                if usage_page != USAGE_BATTERY_PAGE:
                     continue
-                n = caps.NumberFeatureValueCaps
-                if n <= 0 or caps.FeatureReportByteLength <= 0:
+                rep = (c_ubyte * flen)()
+                if report_id:
+                    rep[0] = report_id
+                if not get_feature(h, rep, flen):
                     continue
-                caps_buf = (HIDP_VALUE_CAPS * n)()
-                count = c_ulong(n)
-                if hid32.HidP_GetValueCaps(HidP_Feature, caps_buf,
-                                           byref(count), pp) != 0:
+                v = get_usage_value(pp, HidP_Feature, USAGE_BATTERY_PAGE,
+                                    usage, rep, flen)
+                if v is None:
                     continue
-                for cap in caps_buf[:count.value]:
-                    if cap.UsagePage != USAGE_BATTERY_PAGE:
-                        continue
-                    # 取到 feature report
-                    flen = caps.FeatureReportByteLength
-                    rep = (c_ubyte * flen)()
-                    if cap.ReportID:
-                        rep[0] = cap.ReportID
-                    if not hid32.HidD_GetFeature(h, rep, flen):
-                        continue
-                    val = c_ulong(0)
-                    nt = hid32.HidP_GetUsageValue(
-                        HidP_Feature, USAGE_BATTERY_PAGE, 0, cap.Usage,
-                        byref(val), pp, ctypes.cast(rep, ctypes.c_char_p),
-                        flen)
-                    if nt != 0:
-                        continue
-                    v = val.value
-                    lo, hi = cap.LogicalMin, cap.LogicalMax
-                    if hi > lo and hi != v:
-                        percent = int(round((v - lo) * 100.0 / (hi - lo)))
-                    else:
-                        percent = v if v <= 100 else None
-                    if percent is not None and 0 <= percent <= 100:
-                        return BatteryInfo(
-                            percent=percent, charging=None,
-                            detail="HID Battery Usage", supported=True)
-            finally:
-                hid32.HidD_FreePreparsedData(pp)
+                if hi > lo:
+                    percent = int(round((v - lo) * 100.0 / (hi - lo)))
+                else:
+                    percent = v if v <= 100 else None
+                if percent is not None and 0 <= percent <= 100:
+                    return BatteryInfo(
+                        percent=percent, charging=None,
+                        detail="HID Battery Usage", supported=True)
         finally:
-            kernel32.CloseHandle(h)
+            free_preparsed(pp)
+            close_handle(h)
     return BatteryInfo()

@@ -30,11 +30,15 @@ os.environ.setdefault("TK_LIBRARY", os.path.join(_PY_HOME, "tcl", "tk8.6"))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mousepower.dpi import enable_dpi_awareness, px       # noqa: E402
 from mousepower.config import Config, APP_NAME      # noqa: E402
 from mousepower.core.scanner import DeviceScanner, pick_active_device  # noqa: E402
 from mousepower.ui.widget import FloatingWidget      # noqa: E402
 from mousepower.ui.tray import TrayIcon              # noqa: E402
 from mousepower.ui.settings_window import SettingsWindow  # noqa: E402
+
+# 必须在创建任何窗口之前声明 DPI 感知，否则高分屏上界面会被系统拉伸而发虚
+enable_dpi_awareness()
 
 ERRLOG = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
                       "mousepower_err.log")
@@ -220,7 +224,10 @@ class App:
             set_autostart(True)
         self.tray.start_detached()
         time.sleep(0.4)
-        self.refresh_now()
+        # 引导刷新：设备与 HID 句柄就绪需要一点时间，
+        # 连续补刷几次，确保一启动（含开机自启）就有电量，无需手动刷新
+        for delay in (0, 900, 2200, 4500, 8000):
+            self.widget.root.after(delay, self.refresh_now)
         self.widget.run()
 
 

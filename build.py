@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""MousePower 一键构建：PyInstaller exe → Inno Setup 安装包 → 便携 zip"""
+"""MousePower 一键构建：PyInstaller exe → Inno Setup 安装包 → 便携 zip
+
+打包哪个版本由 spec 决定：
+- mousepower_qt.spec    （默认，Qt/PySide6 版，入口 main_qt.py）
+- mousepower.spec       （旧 tkinter 版，入口 main.py）
+
+用法: python build.py             # Qt 版
+      python build.py tk          # tkinter 版
+"""
 import os
 import shutil
 import subprocess
@@ -16,8 +24,9 @@ def run(cmd, **kw):
     subprocess.check_call(cmd, **kw)
 
 
-def build_exe():
-    spec = os.path.join(ROOT, "mousepower.spec")
+def build_exe(ui="qt"):
+    spec = os.path.join(
+        ROOT, "mousepower.spec" if ui == "tk" else "mousepower_qt.spec")
     pyi = os.path.join(os.path.dirname(sys.executable), "Scripts",
                        "pyinstaller.exe")
     if not os.path.exists(pyi):
@@ -41,8 +50,9 @@ def build_portable(exe):
             "=================\n"
             "1. 双击 MousePower.exe 运行（托盘 + 屏幕右下角浮窗）\n"
             "2. 首次运行如遇 SmartScreen 提示：点[更多信息]→[仍要运行]\n"
-            "3. 设置：托盘图标右键 → 设置…\n"
-            "4. 配置保存在 %APPDATA%\\MousePower\\config.json\n")
+            "3. 设置：托盘图标右键 → 设置…（浮窗右键也可）\n"
+            "4. 配置保存在 %APPDATA%\\MousePower\\config.json\n"
+            "5. 若电量显示 --，可在 设置 → 私有协议探测 里自动试出协议\n")
     zpath = os.path.join(DIST, f"MousePower-v{version()}-portable.zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for fn in os.listdir(portable):
@@ -79,7 +89,8 @@ def version():
 
 
 def main():
-    exe = build_exe()
+    ui = sys.argv[1] if len(sys.argv) > 1 else "qt"
+    exe = build_exe(ui)
     # 复制 exe 给安装器使用
     os.makedirs(APPDIR, exist_ok=True)
     shutil.copy2(exe, os.path.join(APPDIR, "MousePower.exe"))

@@ -20,3 +20,8 @@ desktop.ini
 # 运行日志
 *.log
 PLAN.md
+
+# 开发期验证产物（不对外）
+shots/
+tools/*.txt
+修复说明-*.md

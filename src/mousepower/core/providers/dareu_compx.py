@@ -51,7 +51,12 @@ def _checksum(data) -> int:
 
 
 def _find_paths():
-    """找出命令通道(0xFF02)与响应通道(0xFF01)的 HID 路径"""
+    """找出命令通道(0xFF02)与响应通道(0xFF01)的 HID 路径
+
+    返回顺序固定为 (cmd_path, in_path)。调用方必须按同一顺序解包——
+    这两个变量名都含 "cmd" 极易写错，写反了会把命令发到 input 通道、
+    又去 feature 通道读应答，结果是永远读不到数据（且不报错）。
+    """
     import hid
     for pid in PIDS:
         cmd = inp = None
@@ -132,8 +137,8 @@ class DareuCompxProvider(Provider):
                 return None
         return bytes(buf)[:got.value]
 
-    def _send(self, cmd, params=b""):
-        """发送带校验和的命令，等待匹配 cmd 的响应帧"""
+    def _send_once(self, cmd, params=b""):
+        """发一次命令并等响应（不含自愈重试）"""
         data = bytearray(REPORT_LEN)
         data[0] = 0x08                       # Report ID
         data[1] = cmd
@@ -153,6 +158,27 @@ class DareuCompxProvider(Provider):
             resp = self._read_report(200)
             if resp and len(resp) > 1 and resp[1] == cmd:
                 return resp
+        return None
+
+    def _send(self, cmd, params=b""):
+        """发送带校验和的命令，等待匹配 cmd 的响应帧
+
+        失败时**重开一次句柄再试**：实测接收器会进入"句柄卡死"状态，
+        此时旧句柄读不到任何东西，而重开（并重新枚举 HID 路径）就能恢复。
+        没有这层自愈的话，一旦卡死就只能重启程序。
+        """
+        for attempt in (0, 1):
+            resp = self._send_once(cmd, params)
+            if resp is not None:
+                return resp
+            if attempt == 0:
+                try:
+                    self.close()
+                    _find_paths()            # 重新枚举（设备可能换过端口）
+                except Exception:
+                    pass
+                if not self._ensure_open():
+                    return None
         return None
 
     # ---- 对外接口 ----
